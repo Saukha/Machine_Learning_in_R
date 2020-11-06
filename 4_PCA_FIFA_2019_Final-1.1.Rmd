@@ -1,0 +1,256 @@
+---
+title: "Principal Component Analysis - FIFA 2019 Data"
+author: Sau Kha
+output:
+  html_document:
+    df_print: paged
+
+--- 
+# Dataset Introduction
+Data Source - https://www.kaggle.com/karangadiya/fifa19   
+Context - Football analytics  
+Content - Detailed skills for every player registered in the latest edition of FIFA 19 database.  
+Scraping code at GitHub repo - https://github.com/amanthedorkknight/fifa18-all-player-statistics/tree/master/2019  
+Acknowledgements - Data scraped from https://sofifa.com/  
+Inspiration from this dataset - https://www.kaggle.com/thec03u5/fifa-18-demo-player-dataset  
+This dataset includes lastest edition FIFA 2019 players skills like Age, Nationality, Overall, Potential, Club, Value, Wage, Preferred Foot, International Reputation, Weak Foot, Skill Moves, Work Rate, Position, Jersey Number, Joined, Loaned From, Contract Valid Until, Height, Weight, LS, ST, RS, LW, LF, CF, RF, RW, LAM, CAM, RAM, LM, LCM, CM, RCM, RM, LWB, LDM, CDM, RDM, RWB, LB, LCB, CB, RCB, RB, Crossing, Finishing, Heading, Accuracy, ShortPassing, Volleys, Dribbling, Curve, FKAccuracy, LongPassing, BallControl, Acceleration, SprintSpeed, Agility, Reactions, Balance, ShotPower, Jumping, Stamina, Strength, LongShots, Aggression, Interceptions, Positioning, Vision, Penalties, Composure, Marking, StandingTackle, SlidingTackle, GKDiving, GKHandling, GKKicking, GKPositioning, GKReflees, and Release Clause.  Columns LS, ST, RS, LW, LF, CF, RF, RW, LAM, CAM, RAM, LM, LCM, CM, RCM, RM, LWB, LDM, CDM, RDM, RWB, LB, LCB, CB, RCB, RB list the rating for the position in the scale of 100.
+
+```{r}
+# load library
+library(dplyr)
+library(tibble)
+library(utils)
+library(ggplot2)
+library(corrplot)
+library(caTools)
+
+```
+# Data Exploration 
+
+```{r}
+# Import the data and look at the first six rows
+df <- read.csv(file = 'data.csv')
+
+# df <- read_csv(file = 'data.csv', col_names = TRUE, skip_empty_rows = TRUE)
+head(df)
+# get the summary of the data
+summary(df)
+glimpse(df)
+# date cleaning
+df <- na.omit(df)
+
+df$International.Reputation <- as.factor(df$International.Reputation)  # convert char type to factor 
+df$International.Reputation <- as.ordered(df$International.Reputation) # ordered factor
+colnames(df)
+
+```
+After reviewing a glimpse of the data, I decided to take a closer look at the following features: Preferred.Foot, International.Reputation, Weak.Foot, Skill.Moves, Work.Rate, Body.Type, Position, HeadingAccuracy, ShortPassing, Volleys, Dribbling, Curve, FKAccuracy, LongPassing, BallControl, Acceleration, SprintSpeed, Agility, Reactions, Balance, ShotPower, Jumping, Stamina, Strength, LongShots, Aggression, Interceptions, Positioning, Vision, Penalties, Composure, Marking, StandingTackle, SlidingTackle, GKDiving, GKHandling, GKKicking, GKPositioning and GKReflees.  I'd like to explore how these player's skills may be used to predict player's Overall rating and International Reputation.
+
+# Visualization, e.g. scatter plot, hist, boxplot, etc
+
+```{r fig.height=3, fig.width=5}
+# pick random samples for coding for this assignment
+set.seed(10)
+df2000 <- df[sample(nrow(df), 2000), ]
+# explore the numeric independent features of the dataset
+# df2000_skills <- df2000[55:88]
+
+# histogram per skill rating
+# par(mfrow = c(7, 5))
+for (i in 55:88) {
+  hist(df2000[ , i], main = colnames(df2000[i]), xlim = c(0, 100), 
+       xlab = "Skill Rating", ylab = "Number of Players")
+}
+```
+
+```{r message=FALSE, warning=FALSE}
+# determine k for kmeans cluttering
+# run kmeans() from R in each loop from K = 1 through 8, saving the tot.withinss for each loop
+K <- c() # initialize vector for Elbow Graph
+TOTAL_WITHINSS <- c() # initialize vector for Elbow Graph, cl$tot.withinss
+for (i in 1:8) {
+  cl <- kmeans(as.matrix(df2000[55:88]), i, nstart = 25, iter.max = 20)  
+  K <- c(K,i)
+  TOTAL_WITHINSS <- c(TOTAL_WITHINSS, cl$tot.withinss)
+}
+# create elbow graph
+plot(K, TOTAL_WITHINSS, main = "Elbow Graph to Determine the Number of Clusters")
+lines(K, TOTAL_WITHINSS)
+
+```
+
+The Elbow Graph indicates that there are possibly two or more clusters in the dataset.  Since the total within-cluster variation (TOTAL WITHNSS) do not drop as much when K = 3 and 4, more clustering do not reduce the within group variance as much.  So I ran kmeans clustering on the dataset with k = 2 and visualize the clusters in scatterplots of player's overall rating against each skills rating separately.  
+
+```{r Scatterplot-Overall-Vs-skills, fig.height=3, fig.width=3.5, warning=FALSE}
+# run kmeans with 
+k = 2
+cl <- kmeans(df2000[55:88], k, nstart = 25, iter.max = 20)  
+# create scatterplots
+for (i in 55:88) {
+  plot(df2000[ , i], df2000[, 8], col = cl$cluster,  main = paste(k, "Clusters", sep = " "), xlim = c(0, 100), tl = .5,
+        xlab = colnames(df2000)[i], ylab = colnames(df2000)[8])  # all data points colored by cluster
+}
+```
+
+# Separate the data into two subsets: goal keepers and the rest players
+The figures above show that the player's skills ratings range very differently between the two clusters.  To use the skill ratings to fit an ML model to make accurate prediction, the fitting may be done for each cluster separately.  The cluster in red scores distinctly higher in goalkeeping skills, GK Diving, GK Handling, GK Kicking, GK Positioning and GK Reflexes.
+
+```{r fig.height=7, fig.width=7.5}
+# separate dataset into "GK" and "Non-GK" clusters  
+df_gk <- df[df$Position == "GK", ]     # GK / goal keepers
+df_rest <- df[df$Position != "GK", ]   # rest (Not GK / non-goalkeepers)
+
+# histogram
+par(mfrow = c(2,1), mar = c(3,6,3,3))
+hist(df_gk$Overall, main = "Goal Keepers", ylab = "Number of Players", xlim = c(40, 100), 
+     xlab = " ")
+hist(df_rest$Overall, main = "Other Players", ylab = "Number of Players",  xlim = c(40, 100), 
+     xlab = "Overall Rating Scale of 100")
+
+# boxplot
+boxplot(df_gk$Overall, main = "Goal Keepers", xlab = " ", ylim = c(40, 100), horizontal = TRUE)
+boxplot(df_rest$Overall, main = "Other Players",  xlab = "Overall Rating Scale of 100", ylim = c(40, 100), horizontal = TRUE)
+
+# International Reputation Rating 
+plot(df_gk$International.Reputation, xlab = "Int'l Reputation Scale of 5", ylab = "Number of Players", 
+     main = "Goal Keepers", xlim = c(0, 6))
+plot(df_rest$International.Reputation, xlab = "Int'l Reputation Scale of 5", ylab = "Number of Players", 
+     main = "Other Players", xlim = c(0, 6))
+```
+
+```{r corrplot1, fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+# create corrplot of the numeric columns / skills of the goalkeepers set
+# df_gk_skills <- df_gk[55:88]
+N <- cor(cbind.data.frame(df_gk[8], df_gk[55:88]))
+corrplot(N, method = "ellipse", type = "upper", tl.cex = .5, 
+         title = "Goal Keepers - Skills Ratings Correlation Matrix", mar = c(1, 1, 4, 1))
+
+```
+
+```{r corrplot2, fig.height=7, fig.width=7, message=FALSE, warning=FALSE}
+# create corrplot of the numeric columns / skills of the rest players set
+# df_rest_skills <- df_rest[55:88]
+M <- cor(cbind.data.frame(df_rest[8], df_rest[55:88]))
+corrplot(M, method = "ellipse", type = "upper", tl.cex = .5, 
+         title = "All Other Players - Skills Ratings Correlation Matrix", mar = c(1, 1, 4, 1))
+
+```
+
+# Discussion
+The corrplots of the two distinct clusters reveal interesting observations.  The corrplot for the goal keepers cluster shows that their corrlation coefficients are mostly in the postive range and that a few attribute ratings are strongly correlated.  Principal Component Analysis (CPA) will be able to reduce the dimensions of the dataset by down-select skills that are strongly correlated before fitting any ML models.  
+
+On the other hand, the corrplot for the rest players shows that the values of the correlation coefficients are all over the place (ranging from the negative to the positive).  That is reasonable since a player should be trained for skills set and hence acquire skills that are specific to the player's position.  That is, specific skill set is needed for particular positions, such as defensive midfielders (LDM, CDM and RDM), wings (RW and LW), midfielders (LM, CM and RM), attacking midfielders (LAM, CAM and RAM), and forwards (LF, CF and RF), etc.  PCA conducted on this larger group should lead to different results than the goal keepers (GK) group.  Thus, a different ML model is needed for prediction.
+
+# Research questions: 
+For goalkeepers (GK), of the 34 skill ratings, how many are important to fit a good ML model to predict the overall rating and International Reputation Rating?  Could any of the skill ratings be excluded without much adverse effect?
+
+# Partition data into training and validation set
+```{r}
+# Need more observations of goal keepers.  Read in all data again for re-sampling for training and testing data
+df <- read.csv(file = 'data.csv')
+df$International.Reputation <- as.factor(df$International.Reputation)
+df$International.Reputation <- as.ordered(df$International.Reputation)
+df_gk <- df[df$Position == "GK",]
+
+# split data, keeping same ratio of Int'l Reputation in both subsets
+set.seed(5)
+split = sample.split(df_gk$International.Reputation, SplitRatio = 0.75)  
+df_gk_train = subset(df_gk, split == TRUE)
+df_gk_test = subset(df_gk, split == FALSE)
+rm(split)
+```
+
+# Run PCA (prcomp) on Numeric Columns (Skill Ratings) of Goal Keepers dataset
+```{r fig.height=5, fig.width=8}
+pca_gk <- prcomp(df_gk_train[ , 55:88], center = TRUE, scale. = TRUE)  # PCA on goal keepers training data
+summary(pca_gk)   # summary of PCA results
+
+# create screeplot for first 16 principal components that account for > 80% variance
+screeplot(pca_gk, main = "Scree Plot", type = c("barplot", "lines"), npc = 16, 
+          xlab = "First 16 Principal Components", xlim = c(0,19))
+
+# plot aumulative variance
+cumpro <- cumsum(pca_gk$sdev^2 / sum(pca_gk$sdev^2))
+plot(cumpro[1:20], xlab = "Principal Component #", ylab = "Amount of explained variance", main = "Cumulative Variance Plot",
+     xlim = c(1, 20), ylim = c(0.2, 1))
+abline(v = 16, col = "blue", lty = 5)
+abline(h = 0.8115, col = "blue", lty = 5)
+legend("topleft", legend = c("Cut off @ PC16 where cum var > 80%"), col = c("blue"), lty = 5, cex = 0.6)
+
+```
+
+# Data Dimension Reduction for ML modeling   
+The summary above indicates that PC1 through PC16 explain at least 80% of the variance of the goal keepers. This allows dimension reduction by more than half for ML modeling.  
+
+```{r}
+# re-run prcomp with rank. argument to specify to have a max. of 16 PCs
+pca_gk_16pc <- prcomp(df_gk_train[, 55:88], center = TRUE, scale. = TRUE, rank. = 16) 
+summary(pca_gk_16pc)
+```
+```{r}
+# Alternatively, re-run prcomp with tol set to .25 to automatically omit components if their standard deviations
+# are less than or equal to tol times the standard deviation of the first component
+pca_gk_13pc <- prcomp(df_gk_train[, 55:88], center = TRUE, scale. = TRUE, tol = .25) 
+summary(pca_gk_13pc)  # components 14 - 34 are omitted. PC 1 through PC 13 explained > 75% of the variance of the GK data.
+```
+# Discuss how well (or poorly) these new components and features represent the data   
+
+## visualization, using predict() with first 16 PC and new data   
+The new principal components created from the original features are difficult to understand as it is hard to understand how the components relate to any one of the skill ratings, which are meaningful in the world of soccer.  However, conducting principal component analysis (PCA) provides an advantage in that each of the resultant principal components consists of a certain percent of loading from each of the 34 original features.  Correlation matrix for the goalkeeper cluster shows that quite some skills are strongly correlated, thus PCA results indicates that the data dimension may be reduced from 34 components to 16 and still be able to explain more than 80% of variance in the group.  Even though data dimension is reduced, not one skill rating/feature is completely left out.   The disadvantage is that visualization in the new principal dimensions is hard to comprehend.  Goalkeepers in the train data set are represented by circles in the data space (in the new principal component 1 and 2 dimensions), while those in the test set are represented by diamonds filled with a cross.  In both train and test sets, goalkeepers with higher rank in international reputation are displayed in the bottom left quadrant of the plot.  But it is hard to visualize what skill ratings they receive and why they are plotted in the bottom left of the chart.  
+
+```{r fig.height=8, fig.width=8}
+pred <- predict(pca_gk_16pc, newdata = df_gk_test[ , 55:88])
+expl.var <- round(pca_gk_16pc$sdev^2/sum(pca_gk_16pc$sdev^2)*100) # percent explained variance
+
+# plot resultS
+# International.Reputation
+COLOR <- c(1:5)
+PCH <- c(1, 9)
+pc <- c(1:2)  # plot data in pc1 and pc2 dimensions
+plot(pca_gk_16pc$x[,pc], col = COLOR[df_gk_train$International.Reputation], cex = PCH[1], 
+xlab = paste0("Principal Component  ", pc[1], " (", expl.var[pc[1]], "%)"),
+ylab = paste0("Principal Component  ", pc[2], " (", expl.var[pc[2]], "%)"),
+main = "Int'l Reputation Rank - Training Vs New Test Data"
+)
+# add results of new data
+points(pred[, pc], col = COLOR[df_gk_test$International.Reputation], pch = PCH[2])
+legend("topright", legend = levels(df_gk_test$International.Reputation), fill = COLOR, border = COLOR)
+legend("topleft", legend = c("training data", "test data"), col = 1, pch = PCH)
+
+```
+
+## Selecting Original Features   
+Alternatively, one may select the original feature with highest loading from each of the first 16 PCs.  The section below lists the top 4 original features (player skill ratings) in each of the first 16 principal components.  Based on the list of variable loadings in each principal component, from PC 4, ShortPassing rating with the second highest loading will be selected, as LongPassing rating has already been selected for having the highest loading in PC 3.  Similarly, from PC 8, SlidingTackle rating with the second highest loading will be selected, as Strength rating has already been selected for having the highest loading in PC 7.  The advantage of using the original features from the data for data analysis or ML modeling is for easy understand for clients.  However, the results will bear no representation of the original features that are left out from the model.  
+
+```{r}
+# Top 4 original features that have the highest loadings in the first 16 principal components
+print("Top 4 original features that have the highest loadings in the first 16 principal components:")
+for (i in 1:16) {
+  contrib_i <- abs(pca_gk_16pc$rotation[,i])/sum(abs(pca_gk_16pc$rotation[,i]))
+  print(paste("PC", i, sep = " "))
+  print(head(contrib_i[order(-contrib_i)], n = 4L))
+}
+```
+
+## Visualization with Original features (Skill Ratings)   
+Visualization with original features is much easier to understand.  The following plot is created using two original features that contribute most to the variance of the goalkeeper data set, according to the PCA results.  Visually, clients may relate to the information that there is a positive strong correlation (coefficient = `r  cor(df_gk_train$Reactions, df_gk_train$GKHandling)`) between Reactions Rating and GK Handling Rating.  Additionally, the higher these ratings are the higher the player's international reputation rank is, as shown by the colored dots that represent players who rank higher in international reputation.   
+
+```{r fig.height=8, fig.width=8}
+# calculate correlation coefficient
+ cor(df_gk_train$Reactions, df_gk_train$GKHandling)
+
+# plot resultS in original features (first 2 features that explain the most variance)
+# International.Reputation
+COLOR <- c(1:5)
+PCH <- c(1, 9)
+
+plot(df_gk_train$Reactions, df_gk_train$GKHandling, col = COLOR[df_gk_train$International.Reputation], cex = PCH[1], 
+xlab = "Reactions Rating", ylab = "GK Handling Rating", 
+main = "Int'l Reputation Rank - Scale of 5"
+)
+# add results of new data
+points(df_gk_test$Reactions, df_gk_test$GKHandling, col = COLOR[df_gk_test$International.Reputation], pch = PCH[2])
+legend("bottomright", legend = levels(df_gk_test$International.Reputation), fill = COLOR, border = COLOR)
+legend("topleft", legend = c("training data", "test data"), col = 1, pch = PCH)
+
+```

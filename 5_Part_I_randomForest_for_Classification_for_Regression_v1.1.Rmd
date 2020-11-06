@@ -1,0 +1,247 @@
+---
+title: "FIFA 2019 - randomForest for Classification & for Regression"
+author: "Sau Kha"
+date: "8/24/2020"
+output: html_document
+---
+
+# Dataset Introduction
+Data Source - https://www.kaggle.com/karangadiya/fifa19   
+Context - Football analytics  
+Content - Detailed skills for every player registered in the latest edition of FIFA 19 database.  
+Scraping code at GitHub repo - https://github.com/amanthedorkknight/fifa18-all-player-statistics/tree/master/2019  
+Acknowledgements - Data scraped from https://sofifa.com/  
+Inspiration from this dataset - https://www.kaggle.com/thec03u5/fifa-18-demo-player-dataset  
+There are 18,147 rows x 89 columns of dabta in this dataset.  It includes latest edition FIFA 2019 players skills like Age, Nationality, Overall, Potential, Club, Value, Wage, Preferred Foot, International Reputation, Weak Foot, Skill Moves, Work Rate, Position, Jersey Number, Joined, Loaned From, Contract Valid Until, Height, Weight, LS, ST, RS, LW, LF, CF, RF, RW, LAM, CAM, RAM, LM, LCM, CM, RCM, RM, LWB, LDM, CDM, RDM, RWB, LB, LCB, CB, RCB, RB, Crossing, Finishing, Heading, Accuracy, ShortPassing, Volleys, Dribbling, Curve, FKAccuracy, LongPassing, BallControl, Acceleration, SprintSpeed, Agility, Reactions, Balance, ShotPower, Jumping, Stamina, Strength, LongShots, Aggression, Interceptions, Positioning, Vision, Penalties, Composure, Marking, StandingTackle, SlidingTackle, GKDiving, GKHandling, GKKicking, GKPositioning, GKReflees, and Release Clause.  Columns LS, ST, RS, LW, LF, CF, RF, RW, LAM, CAM, RAM, LM, LCM, CM, RCM, RM, LWB, LDM, CDM, RDM, RWB, LB, LCB, CB, RCB, RB list the rating for the position in the scale of 100.
+
+# Load library
+```{r library, message=FALSE, warning=FALSE}
+# load library
+library(utils)
+library(randomForest)
+library(ggplot2)
+library(stats)
+library(tidyverse)
+library(caTools)
+library(dplyr)
+library(caret)
+library(e1071)
+library(randomForestExplainer)
+library(nnet)
+```
+
+# Introduction  
+A soccer player typically keeps up his training on skills set that are specific to his position.  And conversely, a player's position is typically placed according how well his skills rated for the position.  Additionally, some positions are placed in similar strategic locations in a team formation to play similar roles and will require similar set of skills.  For example, LDM, CDM and RDM all are defensive midfielders. LW and RW are wings on the right and right side of the fore field, while LM, CM and RM are midfielders who stay in the middle of the team formation.  Further, attacking midfielders (LAM, CAM and RAM) and forwards/strikers (LF, CF, RF and ST) together form the offense team in the fore field, etc.    
+
+There are different possible ways of grouping the skills. Attacking skills are important to offense positions, like forwards and strikers while defending skills are crucial to defenders positions. The following shows possible groupings of player skills:  
+
+* _Attacking_: Crossing, Finishing, Heading Accuracy, Short Passing, Volleys  
+* _Skill_: Dribbling, Curve, FK Accuracy, Long Passing, Ball Control  
+* _Movement_: Acceleration, Sprint Speed, Agility, Reactions, Balance  
+* _Power_: Shot Power, Jumping, Stamina, Strength, Long Shots  
+* _Mentality_: Aggression, Interceptions, Positioning, Vision, Penalties, Composure  
+* _Defending_: Marking, Standing Tackle, Sliding Tackle  
+* _Goalkeeping_: GK Diving, GK Handling, GK Kicking, GK Positioning, GK Reflexes   
+
+I'd like to explore the data set and see how player's various skill ratings may be used as predictors for player's Position, Overall Ratings and International Reputation Ranking.  Player's position and international reputation ranking are categorical while overall rating is numeric data.  randomForest and Multinomial Logistic Regression algorithms are explored to train prediction models and evaluated for accuracy and effectiveness.  
+  
+################################################################################  
+# Part I - randomForest for Classification & for Regression  
+
+# Data Exploration  
+From prior data exploration and visualization of player's skill ratings data, goalkeepers forms a very distinct cluster from the remaining players. Basic data exploration and Principal Component Analysis (PCA) has been done on predicting Goalkeepers Overall ratings based on skill ratings.  For this study, the focus is on the non-goalkeeper cluster.  Observations with missing entries in all the position ratings columns were removed, resulting in removing 2085 observations, including all 2025 records of goalkeepers.  (Goakeepers are not rated for other positions.)  
+
+```{r Data Exploration, fig.height=8, fig.width=8}
+# Import the data and look at the first six rows
+df <- read.csv(file = 'data.csv', dec = "+")
+# take a peek at first 5 rows of data  
+head(df)   
+# number of goalkeepers - goalkeepers whose ratings for various positions are missing 
+nrow(df[df$Position == "GK", ])  
+# number of non-goalkeepers whose ratings for various positions are missing
+nrow(df[df$LAM == "NA", ])       
+# remove data with missing entries
+df <- na.omit(df) 
+# summary of cleaned data
+summary.data.frame(df)
+# return the column names of the data set
+print(colnames(df))  
+colnames(df)[1] <- "ind"
+# convert char type to factor
+df$International.Reputation <- as.factor(df$International.Reputation)  
+# ordered factor
+df$International.Reputation <- as.ordered(df$International.Reputation) 
+# convert char to factor
+df$Position <- as.factor(df$Position) 
+# Number of Players by Position
+table(df$Position) 
+# Number of Players by International Reputation Rank
+table(df$International.Reputation) 
+
+```
+
+# Data Visualization
+```{r Intl Rep Class Dist, fig.height=5, fig.width=7}
+# Player Positions Versus mean Overall Rating  
+results <- aggregate(Overall ~ Position, data = df, FUN = "mean", simplify = TRUE)
+# print results table
+print(results) 
+# visualize uneven distribution, "GK" not included
+plot(df$Position, main = "Distribution of Players Positions", 
+     ylab = "Number of Players", xlab = "Player Postion Codes")  
+
+# International Reputation Ranking
+aggregate(df$Overall ~ df$International.Reputation, data = df, FUN = "mean")
+#par(mfrow = c(2,1))
+plot(df$International.Reputation, main = "International Reputation Ranking", 
+     ylab = "Number of Players", xlab = "Scale of 5")
+plot( df$Overall ~ df$International.Reputation, main = "Overall Rating", 
+      xlab = "International Reputation Ranking", ylab = "Scale of 100", ylim = c(40, 100))
+``` 
+
+# Data Preparation    
+
+## Data Sampling and Splitting for Machine Learning Model Training and Testing   
+
+```{r Data Prep}
+# sampling only 4000 rows (only use during coding)
+df1 = df[sample(nrow(df),  4000, replace = TRUE), ]  
+
+# df = complete dataset, df1 = only 4000 rows
+# col 8 = Overall, 16 = Int'l Reputation, 22 = Position, 55:88 = skill ratings
+df_skills <- df[ , c(8, 16, 22, 55:88)]
+
+# Set Seed so that same sample can be reproduced
+set.seed(101) 
+# split data, keeping same dist of International Reputation in both subsets
+split = sample.split(df_skills$International.Reputation, SplitRatio = 0.8)  
+train_skills = subset(df_skills, split == TRUE)
+test_skills = subset(df_skills, split == FALSE)
+rm(split)
+```
+
+# A) randomForest: Classification Model for Player's International Reputation Ranking  
+```{r RF for Classification - Intl Reputation Rank}
+rf_IntRep_class <- randomForest(formula = International.Reputation ~ ., 
+                                data = train_skills[ , c(2, 4:37)], importance = TRUE)
+```
+
+## RF Classification Model Metrics - International Reputation 
+As shown below, the Out of Bag (OOB) error rate is not bad.  Error in predicting International Reputation Rank 1 is pretty low.  However, the error rate in classifying other ranks increases significantly as the rank goes up.  There are only five players who rank 5 in the entire data set and 4 in the test set.  When the algorithm voted any one of them for other ranks, the class.error increases by 25% for Rank 5. There are only 5 players in the complete data set (out of 16122) in Rank 5 and 4 players in the training set. In this training set, all 4 players were classified wrong, leading to 100% error rate. Another problem that happened several times was that the randomForest algorithm threw an error when the randomly selected training set consisted an empty class for Rank  5.  randomForest is just not suited for classification problems with such a skewed class distribution.  
+
+```{r RF Classification Metrics - Intl Rep, fig.height=8, fig.width=12}
+# randomForest results for classification
+attributes(rf_IntRep_class)
+print(rf_IntRep_class)
+# number of players who ranked 5 in whole data set
+nrow(df[df$International.Reputation == '5', ])
+# number of players who ranked 5 in test data set
+nrow(train_skills[train_skills$International.Reputation == '5', ])
+# display the predictors in the order of importance, contributing to classification
+# varImpPlot(rf_IntRep_class, main = "Variable Importance")
+```
+
+## Tune Model with Class Weight  - Ranger Package
+Alternatively, randomForest for classification can be run with class weight when the class distribution is skewed. Ranger is a fast implementation of random forests (Breiman 2001) or recursive partitioning, particularly suited for high dimensional data.  Ranger function from Ranger package includes parameters that are particularly useful for this data set: case.weights (for sampling of training observations), class.weights (for outcome classes), split.select.weights (Numeric vector with weights between 0 and 1, representing the probability to select variables for splitting. Alternatively, a list of size num.trees, containing split select weight vectors for each tree can be used), etc.  Users may apply special tuning of appropriate parameters to adapt the training for unbalanced classification problem at hand with class weights as shown below.   
+
+```{r Intl Reputation Class Wt} 
+# Count of players in each of the International Reputation Rank
+table(df$International.Reputation) 
+# print class weight for each rank
+print(table(df$International.Reputation) / sum(table(df$International.Reputation)))
+```
+
+## Prediction Results - International Reputation  
+The metrics below shows that the overall classification accuracy rate of test data (new players) is 93%, which does not seem bad.  The sensitivity for Rank 1 is also high, at above 98%.  However, the sensitivity for the remaining ranks are pretty low.  Additionally, there is only 1 player who rank 5 in the test data, the sensitivity and specificity are not useful metrics for a 1-person class.  Since the usefulness of this classification model is predict players of top rank based on their skill ratings, it does not really serve its purpose.
+```{r RF Classification Model Prediction Results, warning=FALSE}
+# predict Int'l Reputation Rank of players in test set
+test_IntRep_hat <- predict(rf_IntRep_class, test_skills[ , 4:37], type = "response")
+
+# confusion matrix of test data
+c <- confusionMatrix(test_IntRep_hat, test_skills$International.Reputation)
+print(c)
+```
+
+# B) randomForest: Classification Model for Player's Position
+```{r randomForest for Classification - Player Position}
+# fit randomForest model for classification
+rf_Post_class <- randomForest(formula = Position ~ ., 
+                                data = train_skills[ , c(3:37)], importance = TRUE)
+```
+
+## RF Classification Model Metrics - Player's Position  
+As expected and shown below, the OOB estimate of error rate is pretty high. The class.error for all but 4  positions are greater than 0.5.  The high error rate may be explained by the uneven distribution of players in various positions.  Again, running randomForest with weight for each position class should be able to get more accurate results.     
+
+```{r RF Classification Model Metrics - Position} 
+# randomForest model metrics for classification
+attributes(rf_Post_class)
+print(rf_Post_class)
+# display the predictors in the order of importance, contributing to classification
+# varImpPlot(rf_Post_class, main = "Skills Importance for Classification")
+```
+
+# C) randomForest: Regression Model for Player's Overall Rating   
+```{r first try RF Regression - overall Rating}
+# randomForest: for regression of Player's Overall Rating
+rf_Overall_reg <- randomForest(Overall ~ ., train_skills[ , c(1, 4:37)])
+```
+
+## Model Metrics & Tuning - Player's Position  
+The randomForest regression model explains high percent (>96%) of the variance in Overall Rating estimated based on player's skill ratings, with low mean squared residuals (~1.5).  
+
+```{r first try RF Regression model metrics}
+print(rf_Overall_reg)
+attributes(rf_Overall_reg)
+```
+## Model Tuning - ntree & mtry
+The Error Rate Versus ntree chart shows that the error rate does not improve much after ntree = 300.  The Out-Of-Bag (OOB) error rate chart and table below show that the error is the lowest when mtry = 5.  
+```{r tune_mtree_mtry, fig.height=5, fig.width=7}
+# tune ntree parameter based of error rate: find the optimal value for ntree parameter
+plot(rf_Overall_reg, main = "Error Rate Versus ntree") # error rate does not gain much for ntree > 300
+# tune mtry parameter, setting ntree = 300
+t <- tuneRF(train_skills[ , 4:37], train_skills[ , 1], stepFactor = 0.5, 
+            plot = TRUE, ntreeTry = 300, trace = TRUE, improve = 0.001)   
+print(t)
+```
+## Re-run RF with fine-tuned ntree and mtry parameters
+Here is the regression model from re-running randomForest with the fine-tuned parameters, ntree = 300 and mtry = 5.  Comparing the the percent of variance explained and mean of squared residuals to the initial model with 500 trees and 11 variables at each split, this model with 300 trees and 5 variables at each split performs comparatively well.  The smaller "forest" requires less storage and computing time, and hence is more efficient.  
+
+```{r final run RF for Regression - Overall Rating}
+# re-run randomForest with ntree = 300 & mtry = 5
+rf_Overall_reg2 <- randomForest(Overall ~ ., train_skills[ , c(1, 4:37)], importance = TRUE, ntree = 300, mtry = 5, proximity = TRUE)
+
+print(rf_Overall_reg2)
+```
+## RF Regression Model Prediction Results - Player's Overall Rating
+The chart show that predicted Overall Ratings correlate strongly with the actual values.  The chart displays the importance of each skills in the prediction model.  Variables with highest importance are shown at the top of the chart.  
+
+```{undefined fig.height=7, fig.width=7}
+# predict Overall Rating with fine-tuned RF regression model
+test_Overall_hat <- predict(rf_Overall_reg2, test_skills[ , c(4:37)], 
+                            type = "response")
+
+# plot predicted versus actual Overall Ratings
+plot(test_Overall_hat, test_skills$Overall, xlab = "Test: Player's Overall Rating", ylab = "Predicted Player's Overall Rating", main = "randomForest Regression Result")
+
+# calculate correlation coeff between actual and predicted Overall Ratings
+M <- cor(cbind.data.frame(test_Overall_hat, test_skills$Overall))
+print(M)
+```
+
+```{r RF Model Variable Importance, fig.height=10, fig.width=12}
+# display variable importance
+varImpPlot(rf_Overall_reg2, main = "Variable Importance")
+
+```
+  
+# Conclusion - RF Classification and Regression Models  
+In conclusion, randomForest for classification for players' International Reputation based on players' skill ratings in the 2019 FIFA player data set performed poorly due to extremely skewed distribution of players' rank.  For similar reasons, the classification model to predict players' positions based on skill ratings did not perform well either.  
+
+However, randomForest for regression is a pretty good tool for the same data set in analyzing players' skill ratings to predict their Overall Ratings.  Predicted Overall Ratings strongly correlate with the values in the test set.  Further, using the tuneRF function, the ntree and mtry parameters can be set to a lower number, thus reducing the size of the "forest" but keeping up the performance as measured by the mean of squared residuals and percent variance explained.  
+
+################################################################################  
+# Part II - Multinomial Logistic Regression  
+
+  ... continue in next file ... 
+
+

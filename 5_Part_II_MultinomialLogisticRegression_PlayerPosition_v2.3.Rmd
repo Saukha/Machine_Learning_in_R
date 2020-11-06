@@ -1,0 +1,388 @@
+---
+title: "FIFA 2019 - Multinomial Logistic Regression for Player's Position Category"
+author: "Sau Kha"
+date: "8/26/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part II  Introduction  
+
+Part I of the study concludes that randomForest for classification for players' International Reputation based on players' skill ratings on the FIFA 2019 data performed poorly due to extremely skewed distribution of players' rank.  For similar reasons, the classification model to predict players' positions based on skill ratings did not perform well either.  
+
+However, randomForest for regression is a pretty good tool for the same data set in analyzing players' skill ratings to predict their Overall Ratings.  Predicted Overall Ratings strongly correlate with the values in the test set.  Further, using the tuneRF function, the ntree and mtry parameters can be set to a lower number, thus reducing the size of the "forest" but keeping up the performance as measured by the mean of squared residuals and percent variance explained.  
+
+The following section documents an attempt to use Multinomial Logistic Regression to predict a player's position based on skill ratings.    
+
+# D) Multinomial Logistic Regression  
+
+Multinom function from the nnet package may be used to estimate a multinomial logistic regression model.  The multinom function does not require the data to be reshaped (as the mlogit package does).  (https://stats.idre.ucla.edu/r/dae/multinomial-logistic-regression/)  Multinomial logistic regression does not assume normality, linearity, or homoscedasticity.  
+
+## Load library  
+```{r library, message=FALSE, warning=FALSE}
+# load library
+library(utils)
+library(stats)
+library(tidyverse)
+library(caTools)
+library(dplyr)
+library(caret)
+library(foreign)
+library(nnet)
+library(ggplot2)
+library(reshape2)
+library(MASS)
+library(broom)
+
+```
+
+## Data Preparation  
+A new column NewPosition is created to group players into one of the following categories: Offense, Midfield and Defense based on their actual position recorded in the Position column.  This new grouping results in three multinomial classes.  Players in the same position category play in similar roles and in similar region of the game field.  They are expected to master similar skills required for the positions.  For example, players who rate high in attacking skills such as crossing, finishing, heading accuracy, short passing and volleys, are likely placed as offense and play in the front of the game field.   
+
+Players are placed in their NewPosition Category, Offense, Defense and Midfield, according to their actual positions.  See details below:  
+
+**Offense**:  Position codes ends with “S”, “T”, "W" or "F"  
+_Striker_ "LS" "ST" "RS"  
+- “LS” Left Striker  
+- “ST” Striker  
+- “RS” Right Striker  
+_Wing_: “LW” “RW”  
+- “LW” Left Wing  
+- “RW” Right Wing  
+_Forward_: "LF" "CF" "RF"  
+- “LF” Left Forward  
+- “CF” Centre Forward  
+- “RF” Right Forward  
+
+**Midfield**: Position code ends with “M”  
+_Attacking Mid Field_: “LAM” “CAM” “RAM”  
+- “LAM” Left Attacking Mid Field  
+- “CAM” Center Attacking Mid Field  
+- “RAM” Right Attacking Mid Field  
+_Center Mid Field_: “LCM” “CM” “RCM”  
+- “LCM” Left Center Mid Field  
+- “CM” Center Mid Field  
+- “RCM” Right Center Mid Field  
+_Mid Field_: “LM" "RM"     
+- “LM” Left Midfield  
+- “RM” Right Midfield  
+_Defensive Mid Field_: “LDM” “CDM” “RDM”  
+- “LDM” Left Defensive Mid Field  
+- “CDM” Centre Defensive Mid Field  
+- “RDM” Right Defensive Mid Field  
+
+**Defense**: Position code ends with “B”  
+_Centre Back_: “LCB" “CB” "RCB"   
+- "LCB" Left Centre Back  
+- "RCB" Right Centre Back  
+- “CB” Centre Back  
+_Full Back_: “LB” “RB”  
+- “LB” Left Full Back  
+- “RB” Right Full Back  
+_Wing Back_: “LWB” “RWB”  
+- “LWB” Left Wing Back  
+- “RWB” Right Wing Back  
+
+### Read, Prepare and Split Data  
+```{r read prep and split data}
+# read and prep data
+df2 <- read.csv(file = 'data.csv', dec = "+")
+# remove data with missing entries in rating for various positions
+# all observations for goalkeepers are also removed for same missing entries.
+df2 <- na.omit(df2) 
+
+# create logic vectors to put to group Positions into 3 categories:
+# logic vector for Offense: position code ends with S, T, W or F
+offense <- grepl("^.+(S|T|W|F)$", df2$Position)  
+# logic vector for Defense: position code ends B
+defense <- grepl("^.+(B)$", df2$Position)
+# logic vector for Midfield: position code ends M
+midfield <- grepl("^.+(M)$", df2$Position)
+# Goalkeepers are removed from data set
+# position code = GK, 
+nrow(df2[df2$Position == "GK", ])
+
+# create and populate NewPosition col 
+df2$NewPosition[offense] <- 'Offense'
+df2$NewPosition[midfield] <- 'Midfield'
+df2$NewPosition[defense] <- 'Defense'
+# convert col to factor
+df2$NewPosition <- as.factor(df2$NewPosition)
+
+# Visualize new grouping
+table(df2$NewPosition)
+plot(df2$NewPosition, main = "Player Positions Distribution", ylim = c(0, 7000),
+     sub = "Position Categories", ylab = "Number of Players")
+
+# extract dependent and independent variables
+# col 90 = NewPosition, col 55:88 = skills ratings
+df2s <- df2[, c(90, 55:88)]  
+head(df2s)  # take a peek at first 6 rows of data
+
+# split data into train and test
+# Set Seed so that same sample can be reproduced
+set.seed(101)  
+# split sample while keeping 
+spl = sample.split(df2s$NewPosition, SplitRatio = 0.8)  
+df2s_train = subset(df2s, spl == TRUE)
+df2s_test  = subset(df2s, spl == FALSE)
+rm(spl)
+
+```
+
+# Initial Model - multinom function Using All Variables  
+
+```{r initial_model}
+# choose NewPosition col as the baseline for relevel function
+# reference the level 
+# new col NewPosition2 created
+df2s_train$NewPosition2 <- relevel(df2s_train$NewPosition, ref = "Defense")
+
+# create the initial multinomial regression model 
+mn1 <- multinom(NewPosition2 ~ . - NewPosition, data = df2s_train) # - NewPostion in formula
+```
+
+## Initial Model Metrics  
+
+The algorithm converged at the final value `r mn1$value`, which when multiplied by 2 equals the residual deviance shown in the model summary, `r mn1$value*2 `.  
+
+From the block of coefficients, the first row compares Midfield to Defense baseline, which was specified in the ref argument of the relevel function.  The second row compares Offense to Defense baseline.  The log-likelihood of placing a player in Midfield to Defense baseline may be calculated from the intercept and coefficients from the first row.  Similar calculation is done for the log-likelihood of classifying a player in Offense to Defense.  
+
+```{r initial_model_metrics}
+
+# summary of mn1 model
+summary(mn1)
+
+# z-test: calculate and print z
+z1 <- summary(mn1)$coefficients/summary(mn1)$standard.errors
+z1
+
+# calculate p value for 2-tailed z test
+p1 <- (1 - pnorm(abs(z1), 0, 1)) * 2
+p1
+
+# confusion matrix & mis-classification error - training data
+pred_train1 <- predict(mn1, df2s_train)  # predict with training data
+# confusion matrix
+tab_train1 <- table(pred_train1, df2s_train$NewPosition)  
+tab_train1  
+# mis-classification
+1 - sum(diag(tab_train1)/sum(tab_train1))  # diag() for diagonal matrix 
+# sensitivity: accuracy of predicting position correctly
+tab_train1 / colSums(tab_train1)  
+```
+## Tidy Model Metrics  
+Using broom package, model metrics are shown in tidy output format, which includes p value for each independent variable for each NewPosition category.   
+```{r tidy_model_metrics}
+tidy(mn1)
+glance(mn1)
+
+```
+
+## Predict Using Test Data - Initial Model  
+```{r Predict}
+# predict with test data
+pred_test1 <- predict(mn1, df2s_test)  
+```
+
+## Evaluate Initial Predicted Results
+```{r evaluate_initial_model}
+# confusion matrix
+tab_test1 <- table(pred_test1, df2s_test$NewPosition)  
+tab_test1  
+# accuracy
+sum(diag(tab_test1))/sum(tab_test1)
+# mis-classification
+1 - sum(diag(tab_test1))/sum(tab_test1)  
+ # sensitivity
+tab_test1 / colSums(tab_test1) 
+# visualize
+heatmap(tab_test1, mar = c(10, 5))
+```
+
+# Second Model  
+
+## Manually Adjusted formula  
+p values for each variable were calculated from the initial model outputs.  If the p values for the other two position categories are greater than 0.05, the variable was removed from the formula. This resulted in 11 variables being removed and greatly reduced the data dimension needed for the second prediction model.  Note: as a result, all five goalkeeping skill ratings are removed, which is reasonable as the skills are relevant to goalkeeping position instead.  
+
+```{r tuned_model, warning=FALSE}
+# fine-tune formula, removing variables with p > 0.05 for all other NewPostion categories
+# notice that all GK skills have high p values
+mn2 <- multinom(NewPosition2 ~ . - NewPosition - Volleys - FKAccuracy - Acceleration 
+                - Agility - Reactions - Strength - GKDiving - GKHandling - GKKicking 
+                - GKPositioning - GKReflexes, df2s_train)
+```
+
+## Model Metrics  Summary - 2nd Model  
+```{r tuned_model_metrics}
+
+# summary of mn1 model
+summary(mn2)
+
+# Wald test / z-test: calculate and print z
+z2 <- summary(mn2)$coefficients/summary(mn2)$standard.errors
+z2
+
+# calculate p value for 2-tailed z test
+p2 <- (1 - pnorm(abs(z2), 0, 1)) * 2
+p2
+
+# confusion matrix & mis-classification error - training data
+pred_train2 <- predict(mn2, df2s_train)  # predict with training data
+# confusion matrix
+tab_train2 <- table(pred_train2, df2s_train$NewPosition)  
+tab_train2  
+# mis-classification
+1 - sum(diag(tab_train2)/sum(tab_train2))  # diag() for diagonal matrix 
+# sensitivity: accuracy of predicting position correctly
+tab_train2 / colSums(tab_train2)  
+```
+
+## Tidy Model Metrics - 2nd Model  
+Using broom package, model metrics are shown in tidy output format, which includes p value for each independent variable for each NewPosition category.    
+```{r tidy_tuned_model_metrics}
+tidy(mn2)
+glance(mn2)
+```
+
+## Extract and Exponentiate the Coefficients - 2nd Model 
+
+```{r}
+# extract the coefficients from the model and exponentiate
+ exp(coef(mn2))
+
+# calculate predicted probabilities using fitted() function
+# probabilities of each player being placed in each position category.
+# each row of values add up to 1
+# pp3 <- fitted(mn3) # same as below
+pp2 <- mn2$fitted.values
+# store pp3 in a dataframe
+pp2_df <- as.data.frame(pp2)
+pp2_df$RowSums <- rowSums(pp2_df)
+head(pp2_df)  # first 6 players
+tail(pp2_df)  # last 6 players
+
+```
+
+## Predict Using Test Data - 2nd Model  
+```{r predict_tunded_model}
+# predict with training data
+pred_test2 <- predict(mn2, df2s_test)  
+```
+
+## Evaluate Predicted Results - 2nd Model  
+
+```{r evaluate_tuned_model}
+# confusion matrix
+tab_test2 <- table(pred_test2, df2s_test$NewPosition)  
+tab_test2 
+# accuracy
+sum(diag(tab_test2))/sum(tab_test2)
+# mis-classification
+1 - sum(diag(tab_test2))/sum(tab_test2)  
+ # sensitivity
+tab_test2 / colSums(tab_test2) 
+# visualize
+heatmap(tab_test2, mar = c(10, 5))
+
+```
+
+The accuracy metric of the second model is `r sum(diag(tab_test2))/sum(tab_test2)`.  The calculated sensitivity metric above shows the accuracy of classifying player's for Defense class is `r (tab_test2/colSums(tab_test2))[1,1]`, for Midfield is `r (tab_test2/colSums(tab_test2))[2,2]` and for Offense is `r (tab_test2/colSums(tab_test2))[3,3]`, which correspond to the dark red diagonal blocks in the heat map.  
+
+The mis-classification metric is `r 1 - sum(diag(tab_test2))/sum(tab_test2)`.  The light colored blocks in the heat map show where mis-classification were made.  Darker colors show higer ratios.  
+
+# Final Model  
+
+## stepAIC function from MASS Package    
+stepAIC function chooses a model by AIC in a step-wise algorithm.  step uses add1 and drop1 repeatedly until it converges with the lowest AIC value.  AIC is calculated from:  
+- the number of independent variables used to build the model.  
+- the maximum likelihood estimate of the model (how well the model reproduces the data).  
+
+The best-fit model according to AIC is the one that explains the greatest amount of variation using the fewest possible independent variables.  
+
+```{r stepAIC, message=FALSE, warning=FALSE}
+# output the final model to mn3 
+mn3 <- stepAIC(mn1, trace = FALSE)
+```
+## Model Metrics Summary - Final Model  
+
+```{r final_model_summary}
+summary(mn3)
+```
+## Comparing Initial & Final Model - anova
+stepAIC function eliminated eight independent variables, Acceleration, Agility, Reactions, GHDiving, GDHandling, FKAccuracy and GKPositioning from the initial model.  Though the AIC was only reduced minimally, the dimension of data is significantly reduced.  
+
+Comparing this final model with the initial and second model, both the residual deviance and AIC metrics are slightly better:  
+_Initial Model (all variables)_:                   
+AIC = `r mn1$AIC`, residual deviance = `r mn1$deviance`, number of variables = `r mn1$rank`        
+_Second Model (manually adjusted formula)_:  
+AIC = `r mn2$AIC`, residual deviance = `r mn2$deviance`, number of variables = `r mn2$rank`       
+_Third Model (from stepAIC function)_:          
+AIC = `r mn3$AIC`, residual deviance = `r mn3$deviance`, number of variables = `r mn3$rank`      
+
+
+```{r anova}
+mn3$anova
+
+```
+## Extract and Exponentiate the Coefficients - Final Model  
+
+Log odds of being placed in Midfield positions to Defense positions may be calculated by extracting and exponentiating the coefficients from the first row of outputs from the model.  Similarly, log odds of being placed in Offense positions to Defense positions may be calculated from the second row of outputs.  
+
+```{r}
+# extract the coefficients from the model and exponentiate
+exp(coef(mn3))
+
+# calculate predicted probabilities using fitted() function
+# probabilities of each player being placed in each position category.
+# each row of values add up to 1
+# pp3 <- fitted(mn3) # same as below
+pp3 <- mn3$fitted.values
+# store pp3 in a dataframe
+pp3_df <- as.data.frame(pp3)
+pp3_df$RowSums <- rowSums(pp3_df)
+head(pp3_df)  # first 6 players
+tail(pp3_df)  # last 6 players
+
+```
+
+## Predict Using Test Data - Final Model  
+```{r predict_final_model}
+# predict with test data
+pred_test3 <- predict(mn3, df2s_test)  
+```
+
+## Evaluate Predicted Results - Final Model  
+ 
+```{r evaluate_final_model}
+# confusion matrix
+tab_test3 <- table(pred_test3, df2s_test$NewPosition)  
+tab_test3 
+# accuracy
+sum(diag(tab_test2))/sum(tab_test2)
+# mis-classification
+1 - sum(diag(tab_test3))/sum(tab_test3)  
+ # sensitivity
+tab_test3 / colSums(tab_test3) 
+# visualize
+heatmap(tab_test3, mar = c(10, 5))
+
+```
+
+The accuracy metric of the final model is `r sum(diag(tab_test3))/sum(tab_test3)`.  Calculated sensitivity metric above reflects the accuracy of classifying player, as follows:    
+- for Defense category: `r (tab_test3/colSums(tab_test3))[1,1]`,  
+- for Midfield category: `r (tab_test3/colSums(tab_test3))[2,2]`, and,    
+- for Offense category: `r (tab_test3/colSums(tab_test3))[3,3]`.  
+These are represented by the dark red diagonal blocks in the heat map.  
+
+The mis-classification metric of the model is `r 1 - sum(diag(tab_test3))/sum(tab_test3)`.  The light colored blocks in the heat map show where mis-classification were made.  Darker colors represent higer ratios.  
+
+# Conclusion  
+The FIFA 2019 data contains player's skill ratings and player's position ratings and player's actual position.  The multinom function performed well in multinomial regression classification in predicting player's position category based on skill ratings.  All three models attain high percent accuracy with test sensitivity > 90% for Defense position category, > 85% for Midfield position category and ~ 75% for Offense position category.  For further study, positions may be classified into small categories to see whether test sensitivity may improve.  Small categories may be established by breaking down Offense into Striker, Wing, and Forward; Midfield into Attacking Midfield, Center Midfield, Midfield and Defensive Midfield; Defense into Centre Back, Full Back and Wing Back.  The skills required for more specific roles will be more defined such that position prediction by skill ratings may be more accurate.  
+
+stepAIC function is very powerful and can be utilized to run step-wise algorithm to remove independent variables that do not significantly contribute to the multinomial classification.  However, by evaluation the p-values of the coefficients of all independent variables, the model was tuned to remove more variables and perform comparatively well as measured by the model metrics.    
+
+Part II of this data analysis shows that a player's position can be predicted by a player's skill ratings with pretty good accuracy using a multinomial classification regression machine learning model built by the multinom function from the nnet package.  
